@@ -111,60 +111,45 @@ def parse_number_range_input(raw: str) -> List[str]:
             seen.add(x); result.append(x)
     return result
 
+def _build_auth_cmd(tool_name: str, ip: str, domain: str, user: str, pw: str, h: str, extra_args: str = "") -> str:
+    """
+    Generic builder for Impacket tools using domain/user@ip format.
+    Handles password, hash, and placeholder credentials.
+    """
+    u = udom(domain, user)
+    cmd_parts = [tool_name]
+    if extra_args:
+        cmd_parts.append(extra_args)
+    
+    if pw:
+        cmd_parts.append(f"{u}:{quote_zsh(pw)}@{ip}")
+    elif h:
+        lm, nt = normalize_hash(h)
+        cmd_parts.insert(1, f"-hashes {lm}:{nt}")
+        cmd_parts.append(f"{u}@{ip}")
+    else:
+        cmd_parts.append(f"{u}:<PASSWORD>@{ip}")
+    
+    return ' '.join(cmd_parts)
+
 # -------------------- Generators for scripts --------------------------------
 def gen_wmiexec(ip, domain, user, pw, h):
-    u = udom(domain, user)
-    if pw:
-        return f"wmiexec.py {u}:{quote_zsh(pw)}@{ip}"
-    if h:
-        lm, nt = normalize_hash(h)
-        return f"wmiexec.py -hashes {lm}:{nt} {u}@{ip}"
-    return f"wmiexec.py {u}:<PASSWORD>@{ip}"
+    return _build_auth_cmd("wmiexec.py", ip, domain, user, pw, h)
 
 def gen_psexec(ip, domain, user, pw, h):
-    u = udom(domain, user)
-    if pw:
-        return f"psexec.py {u}:{quote_zsh(pw)}@{ip}"
-    if h:
-        lm, nt = normalize_hash(h)
-        return f"psexec.py -hashes {lm}:{nt} {u}@{ip}"
-    return f"psexec.py {u}:<PASSWORD>@{ip}"
+    return _build_auth_cmd("psexec.py", ip, domain, user, pw, h)
 
 def gen_smbexec(ip, domain, user, pw, h):
-    u = udom(domain, user)
-    if pw:
-        return f"smbexec.py {u}:{quote_zsh(pw)}@{ip}"
-    if h:
-        lm, nt = normalize_hash(h)
-        return f"smbexec.py -hashes {lm}:{nt} {u}@{ip}"
-    return f"smbexec.py {u}:<PASSWORD>@{ip}"
+    return _build_auth_cmd("smbexec.py", ip, domain, user, pw, h)
 
 def gen_atexec(ip, domain, user, pw, h):
-    u = udom(domain, user)
-    if pw:
-        return f"atexec.py {u}:{quote_zsh(pw)}@{ip} whoami"
-    if h:
-        lm, nt = normalize_hash(h)
-        return f"atexec.py -hashes {lm}:{nt} {u}@{ip} whoami"
-    return f"atexec.py {u}:<PASSWORD>@{ip} whoami"
+    return _build_auth_cmd("atexec.py", ip, domain, user, pw, h, "whoami")
 
 def gen_dcomexec(ip, domain, user, pw, h):
-    u = udom(domain, user)
-    if pw:
-        return f"dcomexec.py {u}:{quote_zsh(pw)}@{ip}"
-    if h:
-        lm, nt = normalize_hash(h)
-        return f"dcomexec.py -hashes {lm}:{nt} {u}@{ip}"
-    return f"dcomexec.py {u}:<PASSWORD>@{ip}"
+    return _build_auth_cmd("dcomexec.py", ip, domain, user, pw, h)
 
 def gen_smbclient(ip, domain, user, pw, h):
-    u = udom(domain, user)
-    if pw:
-        return f"smbclient.py {u}:{quote_zsh(pw)}@{ip}"
-    if h:
-        lm, nt = normalize_hash(h)
-        return f"smbclient.py -hashes {lm}:{nt} {u}@{ip}"
-    return f"smbclient.py {u}:<PASSWORD>@{ip}"
+    return _build_auth_cmd("smbclient.py", ip, domain, user, pw, h)
 
 def gen_smbpasswd(ip, domain, user, pw, h):
     return f"smbpasswd.py {ip} {user}"
@@ -206,7 +191,7 @@ def gen_gettgt(ip, domain, user, pw, h):
         return f"GetTGT.py {u}:{quote_zsh(pw)}"
     if h:
         lm, nt = normalize_hash(h)
-        return f"GetTGT.py -u {u} -hashes {lm}:{nt}"
+        return f"GetTGT.py -hashes {lm}:{nt} {u}"
     return f"GetTGT.py {u}:<PASSWORD>"
 
 def gen_getnp(domain, user=None, pw=None):
@@ -217,6 +202,24 @@ def gen_ticketer(user, h):
         lm, nt = normalize_hash(h)
         return f"ticketer.py -nthash {nt} {user}"
     return f"ticketer.py -nthash <NTHASH> {user}"
+
+def gen_getpac(ip, domain, user, pw, h):
+    u = udom(domain, user)
+    if pw:
+        return f"getPac.py {u}:{quote_zsh(pw)}"
+    if h:
+        lm, nt = normalize_hash(h)
+        return f"getPac.py -hashes {lm}:{nt} {u}"
+    return f"getPac.py {u}:<PASSWORD>"
+
+def gen_s4u(ip, domain, user, pw, h):
+    u = udom(domain, user)
+    if pw:
+        return f"s4u.py -impersonate admin {u}:{quote_zsh(pw)}"
+    if h:
+        lm, nt = normalize_hash(h)
+        return f"s4u.py -impersonate admin -hashes {lm}:{nt} {u}"
+    return f"s4u.py -impersonate admin {u}:<PASSWORD>"
 
 def gen_ntlmrelay():
     return "ntlmrelayx.py -tf targets.txt -c whoami"
@@ -233,10 +236,7 @@ def gen_lookupsid(ip, domain=None, user=None, pw=None, h=None):
 
 # MSSQL
 def gen_mssqlclient(ip, domain, user, pw, h):
-    u = udom(domain, user)
-    if pw:
-        return f"mssqlclient.py {u}:{quote_zsh(pw)}@{ip}"
-    return f"mssqlclient.py {u}:<PASSWORD>@{ip}"
+    return _build_auth_cmd("mssqlclient.py", ip, domain, user, pw, h)
 
 # LDAP / enumeration (examples)
 def gen_ldapdomaindump(ip, domain, user, pw, h):
@@ -280,6 +280,8 @@ GENERATORS = {
     'GetTGT.py': gen_gettgt,
     'GetNPUsers.py': lambda ip, domain, user, pw, h: gen_getnp(domain),
     'ticketer.py': lambda ip, domain, user, pw, h: gen_ticketer(user, h),
+    'getPac.py': gen_getpac,
+    's4u.py': gen_s4u,
     'ntlmrelayx.py': lambda ip, domain, user, pw, h: gen_ntlmrelay(),
     'rpcdump.py': gen_rpcdump,
     'samrdump.py': gen_samrdump,
@@ -302,7 +304,7 @@ def build_templates(ip, user, domain, pw, h, categories, target_os):
             idx = int(c)
             if 1 <= idx <= len(cat_keys):
                 resolved.append(cat_keys[idx - 1])
-        except:
+        except (ValueError, TypeError):
             # allow category names passed via CLI
             if isinstance(c, str) and c in CATEGORIES:
                 resolved.append(c)
@@ -389,8 +391,17 @@ def prompt_interactive():
     raw_hash = None
     if ch == '1':
         pw = getpass.getpass("Password: ")
+        while not pw:
+            pw = getpass.getpass("Password (cannot be empty): ")
     elif ch == '2':
         raw_hash = input("NTLM hash (NT or LM:NT): ").strip()
+        while not raw_hash:
+            raw_hash = input("NTLM hash (cannot be empty): ").strip()
+        # Validate hash format
+        if ':' not in raw_hash and len(raw_hash) != 32 and len(raw_hash) != 64:
+            print("⚠️  Warning: Hash format may be incorrect (expected 32 or 64 hex chars, or LM:NT)")
+        if not all(c in '0123456789abcdefABCDEF:' for c in raw_hash):
+            print("⚠️  Warning: Hash contains non-hex characters")
 
     print("Target OS: 1) windows  2) linux  3) all")
     os_ch = input("Choose: ").strip() or '1'
