@@ -58,6 +58,18 @@ SCRIPT_TARGET = {
     'sniffer.py': 'any', 'nmapAnswerMachine.py': 'any'
 }
 
+# -------------------- UI Colors --------------------------------------------
+class Colors:
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
 # -------------------- Helpers ----------------------------------------------
 def normalize_hash(raw_hash: str):
     """Return (lm, nt). If NT-only provided, lm is '' (Impacket accepts ':NT')."""
@@ -194,8 +206,38 @@ def gen_gettgt(ip, domain, user, pw, h):
         return f"GetTGT.py -hashes {lm}:{nt} {u}"
     return f"GetTGT.py {u}:<PASSWORD>"
 
-def gen_getnp(domain, user=None, pw=None):
-    return f"GetNPUsers.py {domain or '<DOMAIN>'} -usersfile users.txt"
+def gen_getnp(ip, domain, user=None, pw=None, h=None, usersfile: str = 'users.txt'):
+    """Build GetNPUsers command.
+
+    Priority:
+    1. If credentials (pw or h) provided with user: use domain/user[:pass] or -hashes form
+    2. If credentials (pw or h) provided without user: use domain[:pass] or -hashes form
+    3. Otherwise: domain-wide enumeration with -usersfile (ignores user param)
+    """
+    # defensive cleanup: user may pass a trailing slash (e.g. 'fusion.corp/') which
+    # becomes an invalid Kerberos principal when passed straight through. Strip
+    # trailing slashes and surrounding whitespace.
+    domain_arg = (domain or '<DOMAIN>').strip().rstrip('/')
+
+    # If we have credentials (password or hash) use the domain/user[:pass] or -hashes form
+    if pw:
+        u = udom(domain_arg, user)
+        if ip:
+            return f"GetNPUsers.py {u}:{quote_zsh(pw)} -dc-ip {ip}"
+        return f"GetNPUsers.py {u}:{quote_zsh(pw)}"
+
+    if h:
+        lm, nt = normalize_hash(h)
+        u = udom(domain_arg, user)
+        if ip:
+            return f"GetNPUsers.py {u} -hashes {lm}:{nt} -dc-ip {ip}"
+        return f"GetNPUsers.py {u} -hashes {lm}:{nt}"
+
+    # No credentials: use domain-wide enumeration with usersfile (ignore user param)
+    # This is the preferred/default mode for GetNPUsers
+    if ip:
+        return f"GetNPUsers.py {domain_arg}/ -dc-ip {ip} -usersfile {usersfile}"
+    return f"GetNPUsers.py {domain_arg}/ -usersfile {usersfile}"
 
 def gen_ticketer(user, h):
     if h:
@@ -278,7 +320,7 @@ GENERATORS = {
     'secretsdump.py': gen_secretsdump,
     'GetUserSPNs.py': gen_getuserspns,
     'GetTGT.py': gen_gettgt,
-    'GetNPUsers.py': lambda ip, domain, user, pw, h: gen_getnp(domain),
+    'GetNPUsers.py': gen_getnp,
     'ticketer.py': lambda ip, domain, user, pw, h: gen_ticketer(user, h),
     'getPac.py': gen_getpac,
     's4u.py': gen_s4u,
@@ -293,7 +335,8 @@ GENERATORS = {
     'nmapAnswerMachine.py': gen_nmapAnswerMachine,
 }
 
-def build_templates(ip, user, domain, pw, h, categories, target_os):
+def build_templates(ip, user, domain, pw, h, categories, target_os, usersfile: str = 'users.txt'):
+    # usersfile is optional and may be forwarded to generators that accept it
     # Map interactive numeric selectors into category keys
     cat_keys = [k for k in CATEGORIES.keys() if k != 'all']
     cat_keys.append('all')
@@ -328,10 +371,14 @@ def build_templates(ip, user, domain, pw, h, categories, target_os):
 
         gen = GENERATORS.get(s)
         if gen:
+            # try calling with expanded params including usersfile for generators that accept it
             try:
-                cmd = gen(ip, domain, user, pw, h)
+                cmd = gen(ip, domain, user, pw, h, usersfile)
             except TypeError:
-                cmd = gen()
+                try:
+                    cmd = gen(ip, domain, user, pw, h)
+                except TypeError:
+                    cmd = gen()
         else:
             cmd = f"# Unknown script: {s}"
 
@@ -350,73 +397,89 @@ def parse_args():
     g.add_argument('--password', help='Plaintext password (careful with shell quoting)')
     g.add_argument('--hash', help='LM:NT or NT-only hash string')
     p.add_argument('--categories', help='Comma-separated category names (non-interactive). Use interactive numbers for prompt.')
+    p.add_argument('--usersfile', help='Users file to use with GetNPUsers (default: users.txt)', default='users.txt')
     p.add_argument('--target-os', choices=['windows','linux','all'], default='all', help='Target OS to tailor commands for')
     return p.parse_args()
 
 def prompt_interactive():
-    print("Interactive Impacket template generator (zsh local shell)")
-    ip = input("Target IP/hostname: ").strip()
+    print(f"{Colors.BOLD}{Colors.CYAN}Interactive Impacket template generator (zsh local shell){Colors.END}")
+    ip = input(f"{Colors.BOLD}Target IP/hostname:{Colors.END} ").strip()
     while not ip:
-        ip = input("Target IP/hostname (cannot be empty): ").strip()
+        ip = input(f"{Colors.RED}Target IP/hostname (cannot be empty):{Colors.END} ").strip()
 
-    user = input("Username: ").strip()
+    user = input(f"{Colors.BOLD}Username:{Colors.END} ").strip()
     while not user:
-        user = input("Username (cannot be empty): ").strip()
+        user = input(f"{Colors.RED}Username (cannot be empty):{Colors.END} ").strip()
 
-    domain = input("Domain (press Enter for none): ").strip() or None
+    domain = input(f"{Colors.BOLD}Domain (press Enter for none):{Colors.END} ").strip() or None
+    # defensive: strip accidental trailing slash from interactive input
+    if domain:
+        domain = domain.rstrip('/')
 
     # --- exact numbered list requested by user ---
-    print("Interactive category selection uses numbers:")
-    print("  1) windows_rce")
-    print("  2) smb_tools")
-    print("  3) ad_kerberos")
-    print("  4) kerberos_extras")
-    print("  5) relay_attack")
-    print("  6) rpc_tools")
-    print("  7) mssql_tools")
-    print("  8) ldap_tools")
-    print("  9) scanning_tools")
-    print(" 10) all")
+    print(f"\n{Colors.YELLOW}Interactive category selection uses numbers:{Colors.END}")
+    print(f"  {Colors.GREEN}1){Colors.END} windows_rce")
+    print(f"  {Colors.GREEN}2){Colors.END} smb_tools")
+    print(f"  {Colors.GREEN}3){Colors.END} ad_kerberos")
+    print(f"  {Colors.GREEN}4){Colors.END} kerberos_extras")
+    print(f"  {Colors.GREEN}5){Colors.END} relay_attack")
+    print(f"  {Colors.GREEN}6){Colors.END} rpc_tools")
+    print(f"  {Colors.GREEN}7){Colors.END} mssql_tools")
+    print(f"  {Colors.GREEN}8){Colors.END} ldap_tools")
+    print(f"  {Colors.GREEN}9){Colors.END} scanning_tools")
+    print(f" {Colors.GREEN}10){Colors.END} all")
     # --- end of exact block ---
 
-    raw = input("Categories (e.g. 1,3,5 or 1-4,7) (default: 10 for 'all'): ").strip() or "10"
+    raw = input(f"\n{Colors.BOLD}Categories (e.g. 1,3,5 or 1-4,7) (default: 10 for 'all'):{Colors.END} ").strip() or "10"
     categories = parse_number_range_input(raw)
 
-    print("Credential type: 1) password  2) NTLM hash  3) none")
-    ch = input("Choose: ").strip()
+    print(f"\n{Colors.YELLOW}Credential type:{Colors.END} {Colors.GREEN}1){Colors.END} password  {Colors.GREEN}2){Colors.END} NTLM hash  {Colors.GREEN}3){Colors.END} none")
+    ch = input(f"{Colors.BOLD}Choose:{Colors.END} ").strip()
     while ch not in ('1','2','3'):
-        ch = input("Choose 1,2 or 3: ").strip()
+        ch = input(f"{Colors.RED}Choose 1,2 or 3:{Colors.END} ").strip()
 
     pw = None
     raw_hash = None
     if ch == '1':
-        pw = getpass.getpass("Password: ")
+        pw = getpass.getpass(f"{Colors.BOLD}Password:{Colors.END} ")
         while not pw:
-            pw = getpass.getpass("Password (cannot be empty): ")
+            pw = getpass.getpass(f"{Colors.RED}Password (cannot be empty):{Colors.END} ")
     elif ch == '2':
-        raw_hash = input("NTLM hash (NT or LM:NT): ").strip()
+        raw_hash = input(f"{Colors.BOLD}NTLM hash (NT or LM:NT):{Colors.END} ").strip()
         while not raw_hash:
-            raw_hash = input("NTLM hash (cannot be empty): ").strip()
+            raw_hash = input(f"{Colors.RED}NTLM hash (cannot be empty):{Colors.END} ").strip()
         # Validate hash format
         if ':' not in raw_hash and len(raw_hash) != 32 and len(raw_hash) != 64:
-            print("⚠️  Warning: Hash format may be incorrect (expected 32 or 64 hex chars, or LM:NT)")
+            print(f"{Colors.YELLOW}⚠️  Warning: Hash format may be incorrect (expected 32 or 64 hex chars, or LM:NT){Colors.END}")
         if not all(c in '0123456789abcdefABCDEF:' for c in raw_hash):
-            print("⚠️  Warning: Hash contains non-hex characters")
+            print(f"{Colors.YELLOW}⚠️  Warning: Hash contains non-hex characters{Colors.END}")
 
-    print("Target OS: 1) windows  2) linux  3) all")
-    os_ch = input("Choose: ").strip() or '1'
+    print(f"\n{Colors.YELLOW}Target OS:{Colors.END} {Colors.GREEN}1){Colors.END} windows  {Colors.GREEN}2){Colors.END} linux  {Colors.GREEN}3){Colors.END} all")
+    os_ch = input(f"{Colors.BOLD}Choose:{Colors.END} ").strip() or '1'
     target_os = 'windows' if os_ch == '1' else ('linux' if os_ch == '2' else 'all')
 
+    # Prompt for usersfile (used by GetNPUsers in domain enumeration)
+    usersfile = input(f"{Colors.BOLD}Users file for GetNPUsers (default users.txt):{Colors.END} ").strip() or 'users.txt'
+
     # interactive: no save prompt and no saving
-    return ip, user, domain, pw, raw_hash, categories, target_os
+    return ip, user, domain, pw, raw_hash, categories, target_os, usersfile
 
 def print_output(templates, ip, user):
-    header = f"Impacket commands for {user}@{ip}  (generated {datetime.utcnow().isoformat()}Z)\n"
-    lines = [header]
+    print("\n" + f"{Colors.BLUE}{'=' * 70}{Colors.END}")
+    header = f"🎉 {Colors.BOLD}{Colors.MAGENTA}Impacket commands generated for {user}@{ip}{Colors.END}"
+    lines = [header, f"{Colors.BLUE}{'=' * 70}{Colors.END}\n"]
     for name, cmd in templates:
-        lines.append('-' * 60)
-        lines.append(f"Script: {name}")
-        lines.append(cmd)
+        lines.append(f"🛠️  {Colors.BOLD}{Colors.GREEN}Script:{Colors.END} {Colors.CYAN}{name}{Colors.END}")
+        
+        # Color the command itself - simple heuristic to color the executable
+        parts = cmd.split(' ', 1)
+        if len(parts) > 1:
+            colored_cmd = f"    {Colors.YELLOW}{parts[0]}{Colors.END} {parts[1]}"
+        else:
+            colored_cmd = f"    {Colors.YELLOW}{cmd}{Colors.END}"
+        
+        lines.append(colored_cmd)
+        lines.append("") # Extra spacing for ADHD readability
     output = '\n'.join(lines)
     print(output)
 
@@ -436,18 +499,18 @@ def main():
         else:
             categories = []
         target_os = args.target_os
-        templates = build_templates(ip, user, domain, pw, raw_hash, categories, target_os)
+        templates = build_templates(ip, user, domain, pw, raw_hash, categories, target_os, usersfile=args.usersfile)
         print_output(templates, ip, user)
         return
 
     # interactive mode (numbers-only categories)
     try:
-        ip, user, domain, pw, raw_hash, categories, target_os = prompt_interactive()
+        ip, user, domain, pw, raw_hash, categories, target_os, usersfile = prompt_interactive()
     except KeyboardInterrupt:
         print("\nAborted by user")
         sys.exit(1)
 
-    templates = build_templates(ip, user, domain, pw, raw_hash, categories, target_os)
+    templates = build_templates(ip, user, domain, pw, raw_hash, categories, target_os, usersfile=usersfile)
     print_output(templates, ip, user)
 
 if __name__ == '__main__':
